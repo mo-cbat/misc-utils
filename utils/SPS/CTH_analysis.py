@@ -1,6 +1,20 @@
 #!/bin/env python
 
 """
+Utility script for plotting SPS CTH geostationary netCDF files
+
+Tested with: iris=3.9.0, cartopy=0.23.0, numpy=1.26.4, matplotlib=3.8.4
+
+usage: CTH_analysis.py [-h] [-i] cth_files [cth_files ...]
+
+Plots CTH files. For a single file, create map plot over India. For multiple files create a timeseries of mean CTH.
+
+positional arguments:
+  cth_files    CTH netcdf file(s)
+
+options:
+  -h, --help   show this help message and exit
+  -i, --india  Mask all data outside of India
 
 """
 
@@ -19,7 +33,7 @@ from iris.util import equalise_attributes, mask_cube
 import matplotlib.pyplot as plt
 import numpy as np
 
-india_lonmin, india_lonmax, india_latmin, india_latmax = 66, 90, 4, 37
+india_lonmin, india_lonmax, india_latmin, india_latmax = 66, 100, 4, 37
 
 
 def update_geo_coords(cube_geo):
@@ -70,13 +84,16 @@ def empty_equi_cube(spacing, coord_bounds=None):
     if not coord_bounds:
         coord_bounds = [-180 + spacing, 180, -90, 90]
     lon0, lon1, lat0, lat1 = coord_bounds
+
     # Define equirectangular CRS
     semimajor_axis = 6378137
     semiminor_axis = 6356752.3
     CRS = GeogCS(semi_major_axis=semimajor_axis, semi_minor_axis=semiminor_axis)
+
     # Define lat/lon grid
     lats = np.arange(lat0, lat1, spacing)
     lons = np.arange(lon0, lon1, spacing)
+
     # Set up cube
     x = DimCoord(
         lons, standard_name="longitude", units="degrees_east", coord_system=CRS
@@ -84,6 +101,7 @@ def empty_equi_cube(spacing, coord_bounds=None):
     y = DimCoord(
         lats, standard_name="latitude", units="degrees_north", coord_system=CRS
     )
+
     # Build the Iris cube
     empty_data = np.zeros((lats.size, lons.size))
     cube = iris.cube.Cube(empty_data)
@@ -91,6 +109,7 @@ def empty_equi_cube(spacing, coord_bounds=None):
     cube.add_dim_coord(x, 1)
     cube.coord("latitude").guess_bounds()
     cube.coord("longitude").guess_bounds()
+
     return cube
 
 
@@ -105,6 +124,7 @@ def regrid_regular_grid_india(source_cube):
     )
     source_cube = update_geo_coords(source_cube)
     cube_ll = source_cube.regrid(target_cube, iris.analysis.Nearest())
+
     return cube_ll
 
 
@@ -112,7 +132,9 @@ def extract_india_cube(cube):
     """
     Given a cube that has a equirectangular lat/lon grid
     definition, return a similar cube with all data outside
-    of India masked
+    of India masked.
+
+    N.B. this can take a few minutes
     """
     filename = shpreader.natural_earth(
         resolution="110m", category="cultural", name="admin_0_countries"
@@ -153,15 +175,32 @@ if __name__ == "__main__":
     )
     parser = argparse.ArgumentParser(description=msg)
     parser.add_argument("cth_files", nargs="+", help="CTH netcdf file(s)")
+    parser.add_argument(
+        "-i",
+        "--india",
+        action="store_true",
+        default=False,
+        help="Mask all data outside of India",
+    )
     args = parser.parse_args()
 
     if len(args.cth_files) == 1:
         # One file
         cube_geo = iris.load_cube(args.cth_files)
-        plot_india(cube_geo)
+
+        if args.india:
+            # Regrid to lat/lon grid for just India region
+            cube_ll = regrid_regular_grid_india(cube_geo)
+            plot_cube = extract_india_cube(cube_ll)
+        else:
+            plot_cube = cube_geo
+
+        plot_india(plot_cube)
+
     else:
         # Multiple files
         cubes_geo = iris.load(args.cth_files)
+
         # Merge the cubes in the time dimension
         # First the attributes need to be equalised to avoid merge failure
         # (https://scitools-iris.readthedocs.io/en/latest/userguide/merge_and_concat.html#merge-concat-common-issues)
@@ -171,5 +210,11 @@ if __name__ == "__main__":
         # Regrid to lat/lon grid for just India region
         cube_ll = regrid_regular_grid_india(cube_geo)
 
+        if args.india:
+            print("WARNING: this takes a long time")
+            plot_cube = extract_india_cube(cube_ll)
+        else:
+            plot_cube = cube_ll
+
         # Plot time series of mean values
-        plot_india_mean_cth(cube_ll)
+        plot_india_mean_cth(plot_cube)
